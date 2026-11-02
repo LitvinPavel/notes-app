@@ -31,7 +31,7 @@ const isRemoteDeletedModalOpen = ref(false)
 const pendingDraft = ref<NoteDraft | null>(null)
 
 // References to child components for auto-focus
-const titleInputRef = ref<{ focus: () => void; select: () => void } | null>(null)
+const titleInputRef = ref<InstanceType<typeof BaseInput> | null>(null)
 const todoItemRefs = ref<(InstanceType<typeof TodoEditorItem> | null)[]>([])
 
 // Draft debounced autosave timer
@@ -104,12 +104,33 @@ watch([title, todos], () => {
   scheduleDraftSave()
 }, { deep: true })
 
+// Check whether an editable text field is currently focused
+const isTextInputActive = (): boolean => {
+  if (typeof document === 'undefined') return false
+  const active = document.activeElement
+  if (!active) return false
+
+  const tagName = active.tagName.toLowerCase()
+  if (tagName === 'textarea') return true
+  if (tagName === 'input') {
+    const inputType = (active as HTMLInputElement).type?.toLowerCase() || 'text'
+    return inputType !== 'checkbox' && inputType !== 'button' && inputType !== 'submit' && inputType !== 'reset'
+  }
+  return (active as HTMLElement).isContentEditable
+}
+
 // Global Hotkeys: Ctrl+Z / Cmd+Z, Shift+Ctrl+Z / Cmd+Shift+Z, Ctrl+Y
+// Only intercepts when focus is NOT inside an editable text input to prevent conflicts with native undo
 const handleGlobalKeydown = (event: KeyboardEvent) => {
   const isModifier = event.ctrlKey || event.metaKey
   if (!isModifier) return
 
   const key = event.key.toLowerCase()
+
+  // Ensure global shortcuts only intercept when focus is not inside an active text input
+  if (isTextInputActive()) {
+    return
+  }
 
   if (key === 'z') {
     event.preventDefault()
@@ -122,6 +143,26 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
     event.preventDefault()
     redo()
   }
+}
+
+// Focus title input and set cursor position to the end of the text
+function focusTitleInput() {
+  nextTick(() => {
+    const component = titleInputRef.value as any
+    const input: HTMLInputElement | null =
+      component?.$el?.querySelector?.('input') ||
+      component?.input?.value ||
+      component?.input ||
+      component
+
+    if (input && 'setSelectionRange' in input) {
+      input.focus()
+      const len = input.value.length
+      input.setSelectionRange(len, len)
+    } else {
+      titleInputRef.value?.focus()
+    }
+  })
 }
 
 // Lifecycle
@@ -169,12 +210,8 @@ onMounted(() => {
   // Attach global keyboard shortcuts
   window.addEventListener('keydown', handleGlobalKeydown)
 
-  // Focus title input on mount if new note
-  if (isNew.value) {
-    nextTick(() => {
-      titleInputRef.value?.focus()
-    })
-  }
+  // Focus title input and place caret at the end
+  focusTitleInput()
 })
 
 onBeforeUnmount(() => {
@@ -252,7 +289,7 @@ const handleSave = () => {
   const trimmedTitle = title.value.trim()
   if (!trimmedTitle) {
     titleError.value = 'Название заметки не может быть пустым'
-    titleInputRef.value?.focus()
+    focusTitleInput()
     return
   }
 

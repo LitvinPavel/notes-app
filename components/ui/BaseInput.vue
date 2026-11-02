@@ -45,7 +45,12 @@ const handleInput = (event: Event) => {
 
 defineExpose({
   focus: () => inputRef.value?.focus(),
-  select: () => inputRef.value?.select()
+  select: () => inputRef.value?.select(),
+  setSelectionRange: (start: number, end: number, direction?: 'forward' | 'backward' | 'none') => {
+    inputRef.value?.focus()
+    inputRef.value?.setSelectionRange(start, end, direction)
+  },
+  input: inputRef
 })
 </script>
 
