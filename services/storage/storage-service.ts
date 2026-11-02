@@ -255,26 +255,10 @@ export class StorageService {
     const sessionKey = getDraftStorageKey(noteId, sId)
     let raw = this.getItem(sessionKey)
 
-    // Fallback checks for backwards-compatibility
+    // Fallback checks for backwards-compatibility with non-session-keyed legacy storage
     if (!raw) {
       const legacyKey = `${DRAFT_STORAGE_PREFIX}${noteId || 'new'}`
       raw = this.getItem(legacyKey)
-    }
-
-    // If opening an existing note in a new tab without its own draft, discover any uncommitted draft
-    if (!raw && noteId && this.isLocalStorageAvailable()) {
-      try {
-        const prefix = `${DRAFT_STORAGE_PREFIX}${noteId}`
-        for (let i = 0; i < window.localStorage.length; i++) {
-          const k = window.localStorage.key(i)
-          if (k && k.startsWith(prefix)) {
-            raw = window.localStorage.getItem(k)
-            break
-          }
-        }
-      } catch {
-        // ignore
-      }
     }
 
     if (!raw) return null

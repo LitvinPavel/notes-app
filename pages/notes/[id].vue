@@ -31,6 +31,8 @@ const isDeleteModalOpen = ref(false)
 const isDraftModalOpen = ref(false)
 const isRemoteDeletedModalOpen = ref(false)
 const isConflictModalOpen = ref(false)
+const isSaveErrorModalOpen = ref(false)
+const saveErrorMessage = ref('')
 const pendingDraft = ref<NoteDraft | null>(null)
 
 // References to child components for auto-focus
@@ -361,7 +363,12 @@ const handleSave = () => {
   }))
 
   if (isNew.value) {
-    notesStore.createNote(trimmedTitle, cleanedTodos)
+    const created = notesStore.createNote(trimmedTitle, cleanedTodos)
+    if (!created) {
+      saveErrorMessage.value = 'Не удалось сохранить заметку: хранилище недоступно для записи (режим только для чтения или превышена дисковая квота).'
+      isSaveErrorModalOpen.value = true
+      return
+    }
   } else {
     const updated = notesStore.updateNote(
       noteIdParam.value,
@@ -370,10 +377,16 @@ const handleSave = () => {
       initialUpdatedAt.value ?? undefined
     )
     if (!updated) {
-      if (notesStore.isDeletedRemotely(noteIdParam.value)) {
+      if (notesStore.isDeletedRemotely(noteIdParam.value) || !notesStore.getNoteById(noteIdParam.value)) {
         isRemoteDeletedModalOpen.value = true
       } else {
-        isConflictModalOpen.value = true
+        const currentInStore = notesStore.getNoteById(noteIdParam.value)
+        if (currentInStore && initialUpdatedAt.value !== null && currentInStore.updatedAt !== initialUpdatedAt.value) {
+          isConflictModalOpen.value = true
+        } else {
+          saveErrorMessage.value = 'Не удалось обновить заметку: хранилище недоступно для записи.'
+          isSaveErrorModalOpen.value = true
+        }
       }
       return
     }
@@ -473,11 +486,6 @@ const handleDiscardDraft = () => {
 
 // Remote deletion resolution: save as new note to preserve user's typed changes
 const handleSaveAsNewNote = () => {
-  shouldPersistDraftOnUnmount = false
-  if (draftTimer) {
-    clearTimeout(draftTimer)
-    draftTimer = null
-  }
   commitTextSession()
   const trimmedTitle = title.value.trim() || 'Копия удаленной заметки'
   const cleanedTodos = todos.value.map(t => ({
@@ -485,7 +493,18 @@ const handleSaveAsNewNote = () => {
     text: t.text.trim()
   }))
 
-  notesStore.createNote(trimmedTitle, cleanedTodos)
+  const created = notesStore.createNote(trimmedTitle, cleanedTodos)
+  if (!created) {
+    saveErrorMessage.value = 'Не удалось сохранить заметку: хранилище недоступно для записи.'
+    isSaveErrorModalOpen.value = true
+    return
+  }
+
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   notesStore.acknowledgeRemoteDeletion(noteIdParam.value)
   notesStore.clearDraft(noteIdParam.value)
   clearHistory()
@@ -509,11 +528,6 @@ const handleRemoteDeletedConfirm = () => {
 
 // Concurrent editing conflict resolution: overwrite remote changes
 const handleOverwriteConflict = () => {
-  shouldPersistDraftOnUnmount = false
-  if (draftTimer) {
-    clearTimeout(draftTimer)
-    draftTimer = null
-  }
   commitTextSession()
   const trimmedTitle = title.value.trim() || 'Без названия'
   const cleanedTodos = todos.value.map(t => ({
@@ -521,7 +535,24 @@ const handleOverwriteConflict = () => {
     text: t.text.trim()
   }))
 
-  notesStore.updateNote(noteIdParam.value, trimmedTitle, cleanedTodos)
+  const updated = notesStore.updateNote(noteIdParam.value, trimmedTitle, cleanedTodos)
+  if (!updated) {
+    if (!notesStore.getNoteById(noteIdParam.value) || notesStore.isDeletedRemotely(noteIdParam.value)) {
+      isConflictModalOpen.value = false
+      isRemoteDeletedModalOpen.value = true
+    } else {
+      isConflictModalOpen.value = false
+      saveErrorMessage.value = 'Не удалось принудительно перезаписать заметку: хранилище недоступно для записи.'
+      isSaveErrorModalOpen.value = true
+    }
+    return
+  }
+
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   clearHistory()
   notesStore.clearDraft(noteIdParam.value)
   isConflictModalOpen.value = false
@@ -530,11 +561,6 @@ const handleOverwriteConflict = () => {
 
 // Concurrent editing conflict resolution: save local version as a new note
 const handleSaveConflictAsNew = () => {
-  shouldPersistDraftOnUnmount = false
-  if (draftTimer) {
-    clearTimeout(draftTimer)
-    draftTimer = null
-  }
   commitTextSession()
   const trimmedTitle = title.value.trim() || 'Копия заметки'
   const cleanedTodos = todos.value.map(t => ({
@@ -542,7 +568,18 @@ const handleSaveConflictAsNew = () => {
     text: t.text.trim()
   }))
 
-  notesStore.createNote(trimmedTitle, cleanedTodos)
+  const created = notesStore.createNote(trimmedTitle, cleanedTodos)
+  if (!created) {
+    saveErrorMessage.value = 'Не удалось сохранить заметку как новую: хранилище недоступно для записи.'
+    isSaveErrorModalOpen.value = true
+    return
+  }
+
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   clearHistory()
   notesStore.clearDraft(noteIdParam.value)
   isConflictModalOpen.value = false
@@ -806,6 +843,17 @@ const handleReloadLatestRemote = () => {
           </div>
         </div>
       </BaseModal>
+
+      <!-- Storage Error Alert Modal -->
+      <ConfirmModal
+        v-model="isSaveErrorModalOpen"
+        title="Ошибка сохранения"
+        :message="saveErrorMessage"
+        confirm-text="Понятно"
+        :hide-cancel="true"
+        confirm-variant="primary"
+        @confirm="isSaveErrorModalOpen = false"
+      />
     </template>
   </div>
 </template>

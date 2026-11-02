@@ -17,6 +17,7 @@ onMounted(() => {
 // Deletion confirmation flow
 const noteToDelete = ref<Note | null>(null)
 const isDeleteModalOpen = ref(false)
+const isDeleteErrorModalOpen = ref(false)
 
 const openDeleteModal = (note: Note) => {
   noteToDelete.value = note
@@ -25,7 +26,10 @@ const openDeleteModal = (note: Note) => {
 
 const handleConfirmDelete = () => {
   if (noteToDelete.value) {
-    notesStore.deleteNote(noteToDelete.value.id)
+    const success = notesStore.deleteNote(noteToDelete.value.id)
+    if (!success) {
+      isDeleteErrorModalOpen.value = true
+    }
     noteToDelete.value = null
   }
 }
@@ -116,6 +120,16 @@ const navigateToEdit = (id: string) => {
       confirm-variant="danger"
       @confirm="handleConfirmDelete"
       @cancel="handleCancelDelete"
+    />
+    <!-- Delete Error Alert Modal -->
+    <ConfirmModal
+      v-model="isDeleteErrorModalOpen"
+      title="Ошибка удаления"
+      message="Не удалось удалить заметку: хранилище недоступно для записи (режим только для чтения или превышена дисковая квота)."
+      confirm-text="Понятно"
+      :hide-cancel="true"
+      confirm-variant="primary"
+      @confirm="isDeleteErrorModalOpen = false"
     />
   </div>
 </template>

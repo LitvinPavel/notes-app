@@ -26,7 +26,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const initialCount = store.notes.length
     const todos: TodoItem[] = [{ id: '1', text: 'Task 1', completed: false }]
 
-    const created = store.createNote('New Note', todos)
+    const created = store.createNote('New Note', todos)!
 
     expect(created.id).toBeDefined()
     expect(created.title).toBe('New Note')
@@ -39,7 +39,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const store = useNotesStore()
     store.init()
 
-    const created = store.createNote('Old Title', [])
+    const created = store.createNote('Old Title', [])!
     const updated = store.updateNote(created.id, 'Updated Title', [
       { id: 't-new', text: 'New item', completed: true }
     ])
@@ -62,7 +62,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const store = useNotesStore()
     store.init()
 
-    const created = store.createNote('To be deleted', [])
+    const created = store.createNote('To be deleted', [])!
     const deleted = store.deleteNote(created.id)
 
     expect(deleted).toBe(true)
@@ -73,8 +73,8 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const store = useNotesStore()
     store.init()
 
-    const note1 = store.createNote('Tab Note 1', [])
-    const note2 = store.createNote('Tab Note 2', [])
+    const note1 = store.createNote('Tab Note 1', [])!
+    const note2 = store.createNote('Tab Note 2', [])!
 
     // Simulate another tab deleting note1 from localStorage
     storageService.saveNotes([note2])
@@ -100,7 +100,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const store = useNotesStore()
     store.init()
 
-    const note = store.createNote('Active Note', [{ id: '1', text: 'Task', completed: false }])
+    const note = store.createNote('Active Note', [{ id: '1', text: 'Task', completed: false }])!
 
     // Simulate remote tab deleting the note
     storageService.saveNotes([])
@@ -121,7 +121,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const store = useNotesStore()
     store.init()
 
-    const note = store.createNote('Original Note', [])
+    const note = store.createNote('Original Note', [])!
 
     // Remote deletion happens
     storageService.saveNotes([])
@@ -130,7 +130,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     // Save as new note
     const savedAsNew = store.createNote('Saved Copy of Original Note', [
       { id: 'new-1', text: 'Important uncommitted work', completed: false }
-    ])
+    ])!
 
     store.acknowledgeRemoteDeletion(note.id)
 
@@ -193,7 +193,7 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     const store = useNotesStore()
     store.init()
 
-    const note = store.createNote('Original Note', [])
+    const note = store.createNote('Original Note', [])!
     const initialUpdatedAt = note.updatedAt
 
     // Simulate another tab modifying the note in storage
@@ -216,28 +216,83 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     expect(current?.title).toBe('Modified in Tab A')
   })
 
-  it('prevents array-level clobbering when modifying different notes in different tabs', () => {
+  it('mitigates array-level clobbering by reloading latest storage before write, while acknowledging client-side concurrency boundaries', () => {
+    // Note: Pure client-side localStorage does not provide ACID multi-process transactions.
+    // Re-reading localStorage before applying mutations significantly reduces the race window,
+    // but in high-concurrency production systems Web Locks API or IndexedDB transactions are required.
     const store = useNotesStore()
     store.init()
 
     const note1 = store.createNote('Note 1', [])
     const note2 = store.createNote('Note 2', [])
+    expect(note1).not.toBeNull()
+    expect(note2).not.toBeNull()
 
     // Simulate Tab A modifying note1 in storage directly
     const storageNotes = storageService.loadNotes()
-    const n1 = storageNotes.find(n => n.id === note1.id)!
+    const n1 = storageNotes.find(n => n.id === note1!.id)!
     n1.title = 'Note 1 updated by Tab A'
     storageService.saveNotes(storageNotes)
 
     // Tab B (current store instance) modifies note2
-    store.updateNote(note2.id, 'Note 2 updated by Tab B', [])
+    store.updateNote(note2!.id, 'Note 2 updated by Tab B', [])
 
     // Re-check storage: both Note 1 and Note 2 updates must be present!
     const finalNotes = storageService.loadNotes()
-    const savedN1 = finalNotes.find(n => n.id === note1.id)
-    const savedN2 = finalNotes.find(n => n.id === note2.id)
+    const savedN1 = finalNotes.find(n => n.id === note1!.id)
+    const savedN2 = finalNotes.find(n => n.id === note2!.id)
 
     expect(savedN1?.title).toBe('Note 1 updated by Tab A')
     expect(savedN2?.title).toBe('Note 2 updated by Tab B')
+  })
+
+  it('fails gracefully and preserves draft when storageService.saveNotes returns false (e.g. read-only schema mode)', () => {
+    const store = useNotesStore()
+    store.init()
+
+    // Mock saveNotes to simulate write refusal
+    const originalSaveNotes = storageService.saveNotes.bind(storageService)
+    storageService.saveNotes = () => false
+
+    store.saveDraft({
+      noteId: null,
+      title: 'Unsaved New Draft',
+      todos: [],
+      updatedAt: 1000
+    })
+
+    const created = store.createNote('Failing Note', [])
+    expect(created).toBeNull()
+    // Draft must be preserved!
+    expect(store.hasDraftFor(null)).toBe(true)
+
+    // Restore saveNotes
+    storageService.saveNotes = originalSaveNotes
+  })
+
+  it('fails gracefully and preserves draft on updateNote when storage write fails', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const note = store.createNote('Active Note', [])
+    expect(note).not.toBeNull()
+
+    store.saveDraft({
+      noteId: note!.id,
+      title: 'Draft for Active Note',
+      todos: [],
+      updatedAt: 2000
+    })
+
+    // Simulate storage failure
+    const originalSaveNotes = storageService.saveNotes.bind(storageService)
+    storageService.saveNotes = () => false
+
+    const updated = store.updateNote(note!.id, 'New Title That Fails', [])
+    expect(updated).toBeNull()
+    // Draft must NOT be cleared!
+    expect(store.hasDraftFor(note!.id)).toBe(true)
+
+    storageService.saveNotes = originalSaveNotes
   })
 })

@@ -59,7 +59,7 @@ describe('NoteEditorPage Draft Lifecycle & Unmount Safety ([P1])', () => {
   it('does NOT re-save draft on unmount after cancelling edits of an existing note', async () => {
     const store = useNotesStore()
     store.init()
-    const note = store.createNote('Original Note Title', [])
+    const note = store.createNote('Original Note Title', [])!
     routeParams.id = note.id
 
     const wrapper = mount(NoteEditorPage, {
@@ -96,7 +96,7 @@ describe('NoteEditorPage Draft Lifecycle & Unmount Safety ([P1])', () => {
   it('does NOT re-save draft on unmount after deleting an existing note', async () => {
     const store = useNotesStore()
     store.init()
-    const note = store.createNote('Note to Delete', [])
+    const note = store.createNote('Note to Delete', [])!
     routeParams.id = note.id
 
     const wrapper = mount(NoteEditorPage, {

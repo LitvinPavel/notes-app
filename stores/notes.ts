@@ -126,8 +126,9 @@ export const useNotesStore = defineStore('notes', {
     /**
      * Create a brand new note and persist to storage.
      * Re-reads freshest notes from storage first to avoid overwriting concurrent changes.
+     * Returns null if persistent storage failed (e.g. read-only schema mode or quota error).
      */
-    createNote(title: string, todos: TodoItem[]): Note {
+    createNote(title: string, todos: TodoItem[]): Note | null {
       const now = Date.now()
       const newNote: Note = {
         id: crypto.randomUUID ? crypto.randomUUID() : `note-${now}-${Math.random().toString(36).substring(2, 9)}`,
@@ -144,8 +145,13 @@ export const useNotesStore = defineStore('notes', {
       // Re-read latest notes to prevent array-level race condition
       const freshNotes = storageService.loadNotes()
       freshNotes.unshift(newNote)
+
+      const saved = storageService.saveNotes(freshNotes)
+      if (!saved) {
+        return null
+      }
+
       this.notes = freshNotes
-      storageService.saveNotes(this.notes)
       this.clearDraft(null)
 
       return newNote
@@ -155,6 +161,7 @@ export const useNotesStore = defineStore('notes', {
      * Update an existing note and persist to storage.
      * Prevents modifying or resurrecting a remotely deleted note.
      * Supports optimistic locking via expectedUpdatedAt.
+     * Returns null if note is not found, remotely deleted, conflicted, or storage write failed.
      */
     updateNote(id: string, title: string, todos: TodoItem[], expectedUpdatedAt?: number): Note | null {
       const freshNotes = storageService.loadNotes()
@@ -184,8 +191,13 @@ export const useNotesStore = defineStore('notes', {
       }
 
       freshNotes[index] = updated
+
+      const saved = storageService.saveNotes(freshNotes)
+      if (!saved) {
+        return null
+      }
+
       this.notes = freshNotes
-      storageService.saveNotes(this.notes)
       this.clearDraft(id)
 
       return updated
@@ -193,14 +205,19 @@ export const useNotesStore = defineStore('notes', {
 
     /**
      * Delete a note by ID and persist to storage.
+     * Returns false if note was not found or storage write failed.
      */
     deleteNote(id: string): boolean {
       const freshNotes = storageService.loadNotes()
       const initialLength = freshNotes.length
-      this.notes = freshNotes.filter(n => n.id !== id)
+      const filtered = freshNotes.filter(n => n.id !== id)
 
-      if (this.notes.length !== initialLength) {
-        storageService.saveNotes(this.notes)
+      if (filtered.length !== initialLength) {
+        const saved = storageService.saveNotes(filtered)
+        if (!saved) {
+          return false
+        }
+        this.notes = filtered
         this.clearDraft(id)
         return true
       }
