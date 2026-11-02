@@ -202,10 +202,13 @@ describe('StorageService (Versioned storage & migration)', () => {
   })
 
   it('correctly falls back to inMemoryStorage when localStorage throws quota error', () => {
-    const originalSetItem = localStorage.setItem
-    localStorage.setItem = () => {
-      throw new Error('QuotaExceededError')
-    }
+    const orig = localStorage.setItem
+    Object.defineProperty(localStorage, 'setItem', {
+      value: () => {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError')
+      },
+      configurable: true
+    })
 
     service.saveDraft({
       noteId: 'in-memory-test',
@@ -219,7 +222,37 @@ describe('StorageService (Versioned storage & migration)', () => {
     expect(retrieved).not.toBeNull()
     expect(retrieved?.title).toBe('Memory Draft')
 
-    // Restore
-    localStorage.setItem = originalSetItem
+    Object.defineProperty(localStorage, 'setItem', { value: orig, configurable: true })
+  })
+
+  it('returns false and captures quota_exceeded reason when saveNotes fails due to QuotaExceededError', () => {
+    const orig = localStorage.setItem
+    Object.defineProperty(localStorage, 'setItem', {
+      value: () => {
+        throw new DOMException('The quota has been exceeded', 'QuotaExceededError')
+      },
+      configurable: true
+    })
+
+    const testNotes: Note[] = [
+      {
+        id: 'quota-test',
+        title: 'Quota Note',
+        createdAt: 1000,
+        updatedAt: 1000,
+        todos: []
+      }
+    ]
+
+    const result = service.saveNotes(testNotes)
+
+    // Must return false to prevent false sense of persistence
+    expect(result).toBe(false)
+    expect(service.getLastFailureReason()).toBe('quota_exceeded')
+
+    // In-memory fallback still holds the value for runtime safety
+    expect(service.isMemoryFallbackActive()).toBe(true)
+
+    Object.defineProperty(localStorage, 'setItem', { value: orig, configurable: true })
   })
 })

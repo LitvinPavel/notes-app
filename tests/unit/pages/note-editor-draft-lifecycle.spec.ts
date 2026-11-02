@@ -128,4 +128,47 @@ describe('NoteEditorPage Draft Lifecycle & Unmount Safety ([P1])', () => {
     expect(store.hasDraftFor(note.id)).toBe(false)
     expect(storageService.getDraft(note.id)).toBeNull()
   })
+
+  it('preserves draft and does NOT navigate away when deletion from editor fails', async () => {
+    mockPush.mockClear()
+    const store = useNotesStore()
+    store.init()
+    const note = store.createNote('Note That Fails To Delete', [])!
+    routeParams.id = note.id
+
+    const wrapper = mount(NoteEditorPage, {
+      attachTo: document.body
+    })
+
+    // Modify title
+    const titleInput = wrapper.find('input[type="text"]')
+    await titleInput.setValue('Draft content that must not be lost')
+
+    // Mock deleteNote to fail
+    const originalDeleteNote = store.deleteNote.bind(store)
+    store.deleteNote = () => false
+
+    // Click "Удалить" in main actions
+    const deleteButton = wrapper.find('.main-actions .danger-btn')
+    expect(deleteButton.exists()).toBe(true)
+    await deleteButton.trigger('click')
+    await nextTick()
+
+    // Confirm delete in modal dialog
+    const modalButtons = Array.from(document.body.querySelectorAll('button'))
+    const confirmButton = modalButtons.find(b => b.textContent?.trim() === 'Удалить' && b.classList.contains('base-button--danger'))
+    expect(confirmButton).toBeDefined()
+    confirmButton?.click()
+    await nextTick()
+
+    // Must NOT navigate to '/'!
+    expect(mockPush).not.toHaveBeenCalledWith('/')
+
+    // Unmount editor component: draft must be preserved on unmount!
+    wrapper.unmount()
+    expect(store.hasDraftFor(note.id)).toBe(true)
+
+    // Restore
+    store.deleteNote = originalDeleteNote
+  })
 })

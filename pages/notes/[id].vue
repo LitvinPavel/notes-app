@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, isRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNotesStore } from '~/stores/notes'
+import { storageService } from '~/services/storage/storage-service'
 import { useNoteHistory } from '~/composables/useNoteHistory'
 import type { TodoItem, NoteDraft } from '~/types/note'
 import BaseButton from '~/components/ui/BaseButton.vue'
@@ -275,6 +276,17 @@ watch(
   }
 )
 
+const getStorageErrorMessage = (action: 'save' | 'delete' | 'overwrite'): string => {
+  const reason = storageService.getLastFailureReason()
+  if (reason === 'quota_exceeded') {
+    return `Не удалось ${action === 'delete' ? 'удалить' : action === 'overwrite' ? 'перезаписать' : 'сохранить'} заметку: превышена квота дискового пространства браузера. Освободите место в хранилище.`
+  }
+  if (reason === 'newer_version') {
+    return `Не удалось ${action === 'delete' ? 'удалить' : action === 'overwrite' ? 'перезаписать' : 'сохранить'} заметку: хранилище использует более новую версию схемы и работает в режиме только для чтения.`
+  }
+  return `Не удалось ${action === 'delete' ? 'удалить' : action === 'overwrite' ? 'перезаписать' : 'сохранить'} заметку: хранилище недоступно для записи (данные не сохранятся после перезагрузки).`
+}
+
 // Actions
 const handleTitleInput = (value: string) => {
   titleError.value = null
@@ -365,7 +377,7 @@ const handleSave = () => {
   if (isNew.value) {
     const created = notesStore.createNote(trimmedTitle, cleanedTodos)
     if (!created) {
-      saveErrorMessage.value = 'Не удалось сохранить заметку: хранилище недоступно для записи (режим только для чтения или превышена дисковая квота).'
+      saveErrorMessage.value = getStorageErrorMessage('save')
       isSaveErrorModalOpen.value = true
       return
     }
@@ -384,7 +396,7 @@ const handleSave = () => {
         if (currentInStore && initialUpdatedAt.value !== null && currentInStore.updatedAt !== initialUpdatedAt.value) {
           isConflictModalOpen.value = true
         } else {
-          saveErrorMessage.value = 'Не удалось обновить заметку: хранилище недоступно для записи.'
+          saveErrorMessage.value = getStorageErrorMessage('save')
           isSaveErrorModalOpen.value = true
         }
       }
@@ -453,17 +465,25 @@ const handleDeleteClick = () => {
 }
 
 const handleConfirmDelete = () => {
+  const targetId = isNew.value ? null : noteIdParam.value
+  if (!isNew.value) {
+    const deleted = notesStore.deleteNote(noteIdParam.value)
+    if (!deleted) {
+      isDeleteModalOpen.value = false
+      saveErrorMessage.value = getStorageErrorMessage('delete')
+      isSaveErrorModalOpen.value = true
+      return
+    }
+  }
+
   shouldPersistDraftOnUnmount = false
   if (draftTimer) {
     clearTimeout(draftTimer)
     draftTimer = null
   }
-  const targetId = isNew.value ? null : noteIdParam.value
-  if (!isNew.value) {
-    notesStore.deleteNote(noteIdParam.value)
-  }
   clearHistory()
   notesStore.clearDraft(targetId)
+  isDeleteModalOpen.value = false
   router.push('/')
 }
 
@@ -542,7 +562,7 @@ const handleOverwriteConflict = () => {
       isRemoteDeletedModalOpen.value = true
     } else {
       isConflictModalOpen.value = false
-      saveErrorMessage.value = 'Не удалось принудительно перезаписать заметку: хранилище недоступно для записи.'
+      saveErrorMessage.value = getStorageErrorMessage('overwrite')
       isSaveErrorModalOpen.value = true
     }
     return
@@ -628,6 +648,12 @@ const handleReloadLatestRemote = () => {
 
     <!-- Active Editor View -->
     <template v-else>
+      <!-- Memory-only Warning Banner -->
+      <div v-if="notesStore.isMemoryOnly" class="storage-warning-banner" role="status">
+        <span class="storage-warning-banner__icon" aria-hidden="true">⚠️</span>
+        <span>Внимание: локальное хранилище недоступно. Приложение работает во временном режиме (данные сохраняются только в памяти до перезагрузки страницы).</span>
+      </div>
+
       <!-- Top Navigation & Action Toolbar -->
       <header class="editor-header">
         <div class="editor-header__nav">
@@ -865,6 +891,25 @@ const handleReloadLatestRemote = () => {
   padding-top: var(--spacing-xl);
   padding-bottom: var(--spacing-2xl);
   max-width: 800px;
+}
+
+.storage-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+  background-color: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  border-radius: var(--border-radius-md);
+  font-size: var(--font-size-sm);
+  color: #a16207;
+  line-height: 1.4;
+
+  &__icon {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+  }
 }
 
 .editor-header {

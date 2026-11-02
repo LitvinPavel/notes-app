@@ -88,25 +88,44 @@ const MIGRATIONS: StorageMigration[] = [
   }
 ]
 
+export type StorageFailureReason = 'quota_exceeded' | 'newer_version' | 'unsupported' | 'write_error' | null
+
 export class StorageService {
   private inMemoryStorage: Map<string, string> = new Map()
+  private lastFailureReason: StorageFailureReason = null
 
-  private isLocalStorageAvailable(): boolean {
-    if (typeof window === 'undefined' || !window.localStorage) {
-      return false
+  public getLastFailureReason(): StorageFailureReason {
+    return this.lastFailureReason
+  }
+
+  public isPersistentAvailable(): boolean {
+    return this.hasLocalStorageSupport() && this.lastFailureReason !== 'quota_exceeded'
+  }
+
+  public isMemoryFallbackActive(): boolean {
+    return !this.hasLocalStorageSupport() || this.inMemoryStorage.size > 0
+  }
+
+  private isQuotaExceededError(err: unknown): boolean {
+    if (!err) return false
+    if (typeof DOMException !== 'undefined' && err instanceof DOMException) {
+      return (
+        err.code === 22 ||
+        err.code === 1014 ||
+        err.name === 'QuotaExceededError' ||
+        err.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+      )
     }
-    try {
-      const testKey = '__storage_test__'
-      window.localStorage.setItem(testKey, testKey)
-      window.localStorage.removeItem(testKey)
-      return true
-    } catch {
-      return false
-    }
+    const msg = String(err).toLowerCase()
+    return msg.includes('quota') || msg.includes('storage full')
+  }
+
+  private hasLocalStorageSupport(): boolean {
+    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined' && window.localStorage !== null
   }
 
   private getItem(key: string): string | null {
-    if (this.isLocalStorageAvailable()) {
+    if (this.hasLocalStorageSupport()) {
       try {
         const val = window.localStorage.getItem(key)
         if (val !== null) {
@@ -120,21 +139,31 @@ export class StorageService {
     return this.inMemoryStorage.get(key) ?? null
   }
 
-  private setItem(key: string, value: string): void {
-    if (this.isLocalStorageAvailable()) {
+  private setItem(key: string, value: string): boolean {
+    if (this.hasLocalStorageSupport()) {
       try {
         window.localStorage.setItem(key, value)
         this.inMemoryStorage.delete(key)
-        return
+        return true
       } catch (err) {
         console.warn(`[StorageService] Failed to write ${key} to localStorage:`, err)
+        if (this.isQuotaExceededError(err)) {
+          this.lastFailureReason = 'quota_exceeded'
+        } else {
+          this.lastFailureReason = 'write_error'
+        }
       }
+    } else {
+      this.lastFailureReason = 'unsupported'
     }
+
+    // Always mirror to in-memory storage so current runtime can read, but indicate write was not persistent
     this.inMemoryStorage.set(key, value)
+    return false
   }
 
   private removeItem(key: string): void {
-    if (this.isLocalStorageAvailable()) {
+    if (this.hasLocalStorageSupport()) {
       try {
         window.localStorage.removeItem(key)
       } catch (err) {
@@ -198,8 +227,11 @@ export class StorageService {
   /**
    * Save notes to persistent storage.
    * Refuses to overwrite if existing storage contains a newer schema version.
+   * Returns false if persistent write failed (e.g. quota exceeded or storage unavailable).
    */
   public saveNotes(notes: Note[]): boolean {
+    this.lastFailureReason = null
+
     const existingRaw = this.getItem(NOTES_STORAGE_KEY)
     if (existingRaw) {
       try {
@@ -208,6 +240,7 @@ export class StorageService {
           console.warn(
             `[StorageService] Refusing to overwrite storage: existing schema version ${existing.version} is newer than application version ${CURRENT_SCHEMA_VERSION}.`
           )
+          this.lastFailureReason = 'newer_version'
           return false
         }
       } catch {
@@ -221,18 +254,25 @@ export class StorageService {
     }
 
     try {
-      this.setItem(NOTES_STORAGE_KEY, JSON.stringify(payload))
+      const persisted = this.setItem(NOTES_STORAGE_KEY, JSON.stringify(payload))
+      if (!persisted) {
+        // Persistent storage write failed (e.g. QuotaExceededError or disabled).
+        // Returning false ensures Pinia and UI are notified and do not falsely report success.
+        return false
+      }
       return true
     } catch (err) {
       console.error('[StorageService] Failed to persist notes:', err)
+      this.lastFailureReason = this.isQuotaExceededError(err) ? 'quota_exceeded' : 'write_error'
       return false
     }
   }
 
   /**
    * Save an unsaved draft to survive page reload, isolated per note ID and tab session.
+   * Returns true if persisted to localStorage, false if stored in in-memory fallback.
    */
-  public saveDraft(draft: NoteDraft, sessionId?: string): void {
+  public saveDraft(draft: NoteDraft, sessionId?: string): boolean {
     const sId = sessionId || draft.sessionId || (typeof window !== 'undefined' ? getTabSessionId() : 'default')
     const key = getDraftStorageKey(draft.noteId, sId)
     const payload: NoteDraft = {
@@ -241,9 +281,10 @@ export class StorageService {
     }
 
     try {
-      this.setItem(key, JSON.stringify(payload))
+      return this.setItem(key, JSON.stringify(payload))
     } catch (err) {
       console.error(`[StorageService] Failed to persist draft for ${key}:`, err)
+      return false
     }
   }
 

@@ -3,7 +3,8 @@ import type { Note, TodoItem, NoteDraft } from '~/types/note'
 import {
   storageService,
   NOTES_STORAGE_KEY,
-  DRAFT_STORAGE_PREFIX
+  DRAFT_STORAGE_PREFIX,
+  type StorageFailureReason
 } from '~/services/storage/storage-service'
 
 interface NotesState {
@@ -11,6 +12,7 @@ interface NotesState {
   isInitialized: boolean
   draftsByNoteId: Record<string, NoteDraft | null>
   deletedRemoteIds: string[]
+  lastStorageError: StorageFailureReason
 }
 
 export const useNotesStore = defineStore('notes', {
@@ -18,7 +20,8 @@ export const useNotesStore = defineStore('notes', {
     notes: [],
     isInitialized: false,
     draftsByNoteId: {},
-    deletedRemoteIds: []
+    deletedRemoteIds: [],
+    lastStorageError: null
   }),
 
   getters: {
@@ -69,6 +72,14 @@ export const useNotesStore = defineStore('notes', {
         if (draft !== null) return draft
       }
       return storageService.getDraft(null)
+    },
+
+    isMemoryOnly: (): boolean => {
+      return !storageService.isPersistentAvailable()
+    },
+
+    storageFailureReason: (state): StorageFailureReason => {
+      return state.lastStorageError
     }
   },
 
@@ -148,9 +159,11 @@ export const useNotesStore = defineStore('notes', {
 
       const saved = storageService.saveNotes(freshNotes)
       if (!saved) {
+        this.lastStorageError = storageService.getLastFailureReason()
         return null
       }
 
+      this.lastStorageError = null
       this.notes = freshNotes
       this.clearDraft(null)
 
@@ -194,9 +207,11 @@ export const useNotesStore = defineStore('notes', {
 
       const saved = storageService.saveNotes(freshNotes)
       if (!saved) {
+        this.lastStorageError = storageService.getLastFailureReason()
         return null
       }
 
+      this.lastStorageError = null
       this.notes = freshNotes
       this.clearDraft(id)
 
@@ -215,8 +230,10 @@ export const useNotesStore = defineStore('notes', {
       if (filtered.length !== initialLength) {
         const saved = storageService.saveNotes(filtered)
         if (!saved) {
+          this.lastStorageError = storageService.getLastFailureReason()
           return false
         }
+        this.lastStorageError = null
         this.notes = filtered
         this.clearDraft(id)
         return true

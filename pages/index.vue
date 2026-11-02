@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNotesStore } from '~/stores/notes'
+import { storageService } from '~/services/storage/storage-service'
 import type { Note } from '~/types/note'
 import NoteCard from '~/components/notes/NoteCard.vue'
 import BaseButton from '~/components/ui/BaseButton.vue'
@@ -18,6 +19,7 @@ onMounted(() => {
 const noteToDelete = ref<Note | null>(null)
 const isDeleteModalOpen = ref(false)
 const isDeleteErrorModalOpen = ref(false)
+const deleteErrorMessage = ref('Не удалось удалить заметку: хранилище недоступно для записи.')
 
 const openDeleteModal = (note: Note) => {
   noteToDelete.value = note
@@ -28,6 +30,14 @@ const handleConfirmDelete = () => {
   if (noteToDelete.value) {
     const success = notesStore.deleteNote(noteToDelete.value.id)
     if (!success) {
+      const reason = storageService.getLastFailureReason()
+      if (reason === 'quota_exceeded') {
+        deleteErrorMessage.value = 'Не удалось удалить заметку: превышена квота дискового пространства браузера. Освободите место в хранилище.'
+      } else if (reason === 'newer_version') {
+        deleteErrorMessage.value = 'Не удалось удалить заметку: хранилище использует более новую версию схемы (режим только для чтения).'
+      } else {
+        deleteErrorMessage.value = 'Не удалось удалить заметку: постоянное хранилище недоступно для записи.'
+      }
       isDeleteErrorModalOpen.value = true
     }
     noteToDelete.value = null
@@ -71,6 +81,12 @@ const navigateToEdit = (id: string) => {
         Новая заметка
       </BaseButton>
     </header>
+
+    <!-- Memory-only Warning Banner -->
+    <div v-if="notesStore.isMemoryOnly" class="storage-warning-banner" role="status">
+      <span class="storage-warning-banner__icon" aria-hidden="true">⚠️</span>
+      <span>Внимание: локальное хранилище недоступно (приватный режим или отключены cookies). Заметки доступны только до перезагрузки страницы.</span>
+    </div>
 
     <main class="notes-page__content">
       <div v-if="notesStore.allNotes.length > 0" class="notes-grid">
@@ -125,7 +141,7 @@ const navigateToEdit = (id: string) => {
     <ConfirmModal
       v-model="isDeleteErrorModalOpen"
       title="Ошибка удаления"
-      message="Не удалось удалить заметку: хранилище недоступно для записи (режим только для чтения или превышена дисковая квота)."
+      :message="deleteErrorMessage"
       confirm-text="Понятно"
       :hide-cancel="true"
       confirm-variant="primary"
@@ -140,6 +156,25 @@ const navigateToEdit = (id: string) => {
 .notes-page {
   padding-top: var(--spacing-xl);
   padding-bottom: var(--spacing-2xl);
+}
+
+.storage-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+  background-color: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  border-radius: var(--border-radius-md);
+  font-size: var(--font-size-sm);
+  color: #a16207;
+  line-height: 1.4;
+
+  &__icon {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+  }
 }
 
 .notes-page__header {

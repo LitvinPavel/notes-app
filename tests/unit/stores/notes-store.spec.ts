@@ -295,4 +295,40 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
 
     storageService.saveNotes = originalSaveNotes
   })
+
+  it('fails gracefully and preserves note when deleteNote storage write fails', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const note = store.createNote('Note To Keep', [])
+    expect(note).not.toBeNull()
+
+    const originalSaveNotes = storageService.saveNotes.bind(storageService)
+    storageService.saveNotes = () => false
+
+    const deleted = store.deleteNote(note!.id)
+    expect(deleted).toBe(false)
+    expect(store.getNoteById(note!.id)).toBeDefined()
+
+    storageService.saveNotes = originalSaveNotes
+  })
+
+  it('propagates quota_exceeded error from storageService to store.storageFailureReason', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const orig = localStorage.setItem
+    Object.defineProperty(localStorage, 'setItem', {
+      value: () => {
+        throw new DOMException('Disk quota exceeded', 'QuotaExceededError')
+      },
+      configurable: true
+    })
+
+    const created = store.createNote('Failing Quota Note', [])
+    expect(created).toBeNull()
+    expect(store.storageFailureReason).toBe('quota_exceeded')
+
+    Object.defineProperty(localStorage, 'setItem', { value: orig, configurable: true })
+  })
 })
