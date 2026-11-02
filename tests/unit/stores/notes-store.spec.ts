@@ -188,4 +188,56 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     expect(store.hasDraftFor('note-remote')).toBe(true)
     expect(store.getDraftFor('note-remote')?.title).toBe('Remote Tab Draft')
   })
+
+  it('detects concurrent modification conflict via expectedUpdatedAt', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const note = store.createNote('Original Note', [])
+    const initialUpdatedAt = note.updatedAt
+
+    // Simulate another tab modifying the note in storage
+    const freshInStorage = storageService.loadNotes()
+    freshInStorage[0] = {
+      ...freshInStorage[0]!,
+      title: 'Modified in Tab A',
+      updatedAt: initialUpdatedAt + 5000
+    }
+    storageService.saveNotes(freshInStorage)
+
+    // Tab B attempts to update with the stale expectedUpdatedAt
+    const result = store.updateNote(note.id, 'Stale Update from Tab B', [], initialUpdatedAt)
+
+    // Must return null (conflict detected!)
+    expect(result).toBeNull()
+
+    // Storage must still retain Tab A's modifications
+    const current = storageService.loadNotes().find(n => n.id === note.id)
+    expect(current?.title).toBe('Modified in Tab A')
+  })
+
+  it('prevents array-level clobbering when modifying different notes in different tabs', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const note1 = store.createNote('Note 1', [])
+    const note2 = store.createNote('Note 2', [])
+
+    // Simulate Tab A modifying note1 in storage directly
+    const storageNotes = storageService.loadNotes()
+    const n1 = storageNotes.find(n => n.id === note1.id)!
+    n1.title = 'Note 1 updated by Tab A'
+    storageService.saveNotes(storageNotes)
+
+    // Tab B (current store instance) modifies note2
+    store.updateNote(note2.id, 'Note 2 updated by Tab B', [])
+
+    // Re-check storage: both Note 1 and Note 2 updates must be present!
+    const finalNotes = storageService.loadNotes()
+    const savedN1 = finalNotes.find(n => n.id === note1.id)
+    const savedN2 = finalNotes.find(n => n.id === note2.id)
+
+    expect(savedN1?.title).toBe('Note 1 updated by Tab A')
+    expect(savedN2?.title).toBe('Note 2 updated by Tab B')
+  })
 })

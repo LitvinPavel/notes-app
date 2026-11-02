@@ -23,6 +23,7 @@ export interface StoredNotesPayload {
 
 export interface NoteDraft {
   readonly noteId: string | null // null indicates draft for a brand new note
+  readonly sessionId?: string // tab-specific editor session id
   readonly title: string
   readonly todos: TodoItem[]
   readonly updatedAt: number

@@ -6,6 +6,7 @@ import { useNoteHistory } from '~/composables/useNoteHistory'
 import type { TodoItem, NoteDraft } from '~/types/note'
 import BaseButton from '~/components/ui/BaseButton.vue'
 import BaseInput from '~/components/ui/BaseInput.vue'
+import BaseModal from '~/components/ui/BaseModal.vue'
 import ConfirmModal from '~/components/ui/ConfirmModal.vue'
 import TodoEditorItem from '~/components/notes/TodoEditorItem.vue'
 
@@ -22,17 +23,22 @@ const todos = ref<TodoItem[]>([])
 const isNotFound = ref(false)
 const titleError = ref<string | null>(null)
 const initialLoadedState = ref<{ title: string; todosJson: string }>({ title: '', todosJson: '[]' })
+const initialUpdatedAt = ref<number | null>(null)
 
 // Modals state
 const isCancelModalOpen = ref(false)
 const isDeleteModalOpen = ref(false)
 const isDraftModalOpen = ref(false)
 const isRemoteDeletedModalOpen = ref(false)
+const isConflictModalOpen = ref(false)
 const pendingDraft = ref<NoteDraft | null>(null)
 
 // References to child components for auto-focus
 const titleInputRef = ref<InstanceType<typeof BaseInput> | null>(null)
 const todoItemRefs = ref<(InstanceType<typeof TodoEditorItem> | null)[]>([])
+
+// Lifecycle guard: false when unmounting after an intentional save, cancel, or delete
+let shouldPersistDraftOnUnmount = true
 
 // Draft debounced autosave timer
 let draftTimer: ReturnType<typeof setTimeout> | null = null
@@ -87,6 +93,8 @@ const isDirty = computed(() => {
 
 // Flush and persist or clear draft immediately (e.g. before unload / pagehide / unmount)
 const flushDraftNow = () => {
+  if (!shouldPersistDraftOnUnmount) return
+
   if (draftTimer) {
     clearTimeout(draftTimer)
     draftTimer = null
@@ -108,8 +116,10 @@ const flushDraftNow = () => {
 
 // Schedule draft save or clean state clearance
 const scheduleDraftSave = () => {
+  if (!shouldPersistDraftOnUnmount) return
   if (draftTimer) clearTimeout(draftTimer)
   draftTimer = setTimeout(() => {
+    if (!shouldPersistDraftOnUnmount) return
     const targetId = isNew.value ? null : noteIdParam.value
     if (isDirty.value) {
       notesStore.saveDraft({
@@ -145,17 +155,22 @@ const isTextInputActive = (): boolean => {
 }
 
 // Global Hotkeys: Ctrl+Z / Cmd+Z, Shift+Ctrl+Z / Cmd+Shift+Z, Ctrl+Y
-// Only intercepts when focus is NOT inside an editable text input to prevent conflicts with native undo
+// Only intercepts when focus is NOT inside an editable text input and NO modal dialog is open
 const handleGlobalKeydown = (event: KeyboardEvent) => {
   const isModifier = event.ctrlKey || event.metaKey
   if (!isModifier) return
 
-  const key = event.key.toLowerCase()
+  // Do not intercept hotkeys when any modal dialog is currently open
+  if (typeof document !== 'undefined' && document.querySelector('[role="dialog"][aria-modal="true"]')) {
+    return
+  }
 
   // Ensure global shortcuts only intercept when focus is not inside an active text input
   if (isTextInputActive()) {
     return
   }
+
+  const key = event.key.toLowerCase()
 
   if (key === 'z') {
     event.preventDefault()
@@ -205,6 +220,7 @@ onMounted(() => {
       title: existing.title,
       todosJson: JSON.stringify(existing.todos)
     }
+    initialUpdatedAt.value = existing.updatedAt
   } else {
     title.value = ''
     todos.value = []
@@ -212,6 +228,7 @@ onMounted(() => {
       title: '',
       todosJson: '[]'
     }
+    initialUpdatedAt.value = null
   }
 
   // Check for unsaved draft for this specific note
@@ -321,6 +338,15 @@ const handleSave = () => {
     return
   }
 
+  // Optimistic concurrency check: note modified in another tab
+  if (!isNew.value) {
+    const currentNote = notesStore.getNoteById(noteIdParam.value)
+    if (currentNote && initialUpdatedAt.value !== null && currentNote.updatedAt !== initialUpdatedAt.value) {
+      isConflictModalOpen.value = true
+      return
+    }
+  }
+
   const trimmedTitle = title.value.trim()
   if (!trimmedTitle) {
     titleError.value = 'Название заметки не может быть пустым'
@@ -337,15 +363,34 @@ const handleSave = () => {
   if (isNew.value) {
     notesStore.createNote(trimmedTitle, cleanedTodos)
   } else {
-    const updated = notesStore.updateNote(noteIdParam.value, trimmedTitle, cleanedTodos)
+    const updated = notesStore.updateNote(
+      noteIdParam.value,
+      trimmedTitle,
+      cleanedTodos,
+      initialUpdatedAt.value ?? undefined
+    )
     if (!updated) {
-      isRemoteDeletedModalOpen.value = true
+      if (notesStore.isDeletedRemotely(noteIdParam.value)) {
+        isRemoteDeletedModalOpen.value = true
+      } else {
+        isConflictModalOpen.value = true
+      }
       return
     }
   }
 
+  // Mark completion to prevent onBeforeUnmount from recreating draft
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   clearHistory()
   notesStore.clearDraft(targetId)
+  initialLoadedState.value = {
+    title: trimmedTitle,
+    todosJson: JSON.stringify(cleanedTodos)
+  }
   router.push('/')
 }
 
@@ -355,6 +400,11 @@ const handleCancelClick = () => {
   if (isDirty.value) {
     isCancelModalOpen.value = true
   } else {
+    shouldPersistDraftOnUnmount = false
+    if (draftTimer) {
+      clearTimeout(draftTimer)
+      draftTimer = null
+    }
     clearHistory()
     notesStore.clearDraft(targetId)
     router.push('/')
@@ -362,6 +412,11 @@ const handleCancelClick = () => {
 }
 
 const handleConfirmCancel = () => {
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   const targetId = isNew.value ? null : noteIdParam.value
   clearHistory()
   notesStore.clearDraft(targetId)
@@ -371,6 +426,11 @@ const handleConfirmCancel = () => {
 const handleDeleteClick = () => {
   const targetId = isNew.value ? null : noteIdParam.value
   if (isNew.value) {
+    shouldPersistDraftOnUnmount = false
+    if (draftTimer) {
+      clearTimeout(draftTimer)
+      draftTimer = null
+    }
     clearHistory()
     notesStore.clearDraft(targetId)
     router.push('/')
@@ -380,6 +440,11 @@ const handleDeleteClick = () => {
 }
 
 const handleConfirmDelete = () => {
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   const targetId = isNew.value ? null : noteIdParam.value
   if (!isNew.value) {
     notesStore.deleteNote(noteIdParam.value)
@@ -408,6 +473,11 @@ const handleDiscardDraft = () => {
 
 // Remote deletion resolution: save as new note to preserve user's typed changes
 const handleSaveAsNewNote = () => {
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   commitTextSession()
   const trimmedTitle = title.value.trim() || 'Копия удаленной заметки'
   const cleanedTodos = todos.value.map(t => ({
@@ -425,11 +495,75 @@ const handleSaveAsNewNote = () => {
 
 // Remote deletion resolution: acknowledge and discard
 const handleRemoteDeletedConfirm = () => {
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
   notesStore.acknowledgeRemoteDeletion(noteIdParam.value)
   clearHistory()
   notesStore.clearDraft(noteIdParam.value)
   isRemoteDeletedModalOpen.value = false
   router.push('/')
+}
+
+// Concurrent editing conflict resolution: overwrite remote changes
+const handleOverwriteConflict = () => {
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  commitTextSession()
+  const trimmedTitle = title.value.trim() || 'Без названия'
+  const cleanedTodos = todos.value.map(t => ({
+    ...t,
+    text: t.text.trim()
+  }))
+
+  notesStore.updateNote(noteIdParam.value, trimmedTitle, cleanedTodos)
+  clearHistory()
+  notesStore.clearDraft(noteIdParam.value)
+  isConflictModalOpen.value = false
+  router.push('/')
+}
+
+// Concurrent editing conflict resolution: save local version as a new note
+const handleSaveConflictAsNew = () => {
+  shouldPersistDraftOnUnmount = false
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  commitTextSession()
+  const trimmedTitle = title.value.trim() || 'Копия заметки'
+  const cleanedTodos = todos.value.map(t => ({
+    ...t,
+    text: t.text.trim()
+  }))
+
+  notesStore.createNote(trimmedTitle, cleanedTodos)
+  clearHistory()
+  notesStore.clearDraft(noteIdParam.value)
+  isConflictModalOpen.value = false
+  router.push('/')
+}
+
+// Concurrent editing conflict resolution: discard local edits and reload remote version
+const handleReloadLatestRemote = () => {
+  const fresh = notesStore.getNoteById(noteIdParam.value)
+  if (fresh) {
+    title.value = fresh.title
+    todos.value = fresh.todos.map(t => ({ ...t }))
+    initialLoadedState.value = {
+      title: fresh.title,
+      todosJson: JSON.stringify(fresh.todos)
+    }
+    initialUpdatedAt.value = fresh.updatedAt
+    clearHistory()
+    notesStore.clearDraft(noteIdParam.value)
+  }
+  isConflictModalOpen.value = false
 }
 </script>
 
@@ -645,6 +779,33 @@ const handleRemoteDeletedConfirm = () => {
         @confirm="handleSaveAsNewNote"
         @cancel="handleRemoteDeletedConfirm"
       />
+
+      <!-- Concurrent Edit Conflict Modal -->
+      <BaseModal
+        v-model="isConflictModalOpen"
+        title="Конфликт одновременного редактирования"
+        :close-on-escape="false"
+        :close-on-backdrop="false"
+        :show-close-button="false"
+      >
+        <div class="conflict-dialog">
+          <p class="conflict-dialog__message">
+            Заметка была изменена в другой вкладке браузера во время вашего редактирования.
+            Выберите, как поступить с текущими изменениями:
+          </p>
+          <div class="conflict-dialog__actions">
+            <BaseButton variant="primary" size="sm" @click="handleSaveConflictAsNew">
+              Сохранить как новую
+            </BaseButton>
+            <BaseButton variant="danger" size="sm" @click="handleOverwriteConflict">
+              Перезаписать чужие правки
+            </BaseButton>
+            <BaseButton variant="secondary" size="sm" @click="handleReloadLatestRemote">
+              Загрузить актуальную версию
+            </BaseButton>
+          </div>
+        </div>
+      </BaseModal>
     </template>
   </div>
 </template>
@@ -803,5 +964,29 @@ const handleRemoteDeletedConfirm = () => {
   font-size: 0.9375rem;
   color: var(--color-text-secondary);
   margin-bottom: var(--spacing-lg);
+}
+
+.conflict-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+
+  &__message {
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    line-height: 1.5;
+  }
+
+  &__actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+
+    @include tablet {
+      flex-direction: row;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+  }
 }
 </style>

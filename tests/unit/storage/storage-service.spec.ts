@@ -140,4 +140,86 @@ describe('StorageService (Versioned storage & migration)', () => {
     expect(service.getDraft('note-b')).not.toBeNull()
     expect(service.getDraft(null)).not.toBeNull()
   })
+
+  it('isolates drafts for new notes between different browser tab sessions', () => {
+    const draftTab1: NoteDraft = {
+      noteId: null,
+      sessionId: 'tab-session-1',
+      title: 'New Note in Tab 1',
+      todos: [{ id: 't1', text: 'Task 1', completed: false }],
+      updatedAt: 1000
+    }
+    const draftTab2: NoteDraft = {
+      noteId: null,
+      sessionId: 'tab-session-2',
+      title: 'New Note in Tab 2',
+      todos: [{ id: 't2', text: 'Task 2', completed: false }],
+      updatedAt: 2000
+    }
+
+    service.saveDraft(draftTab1, 'tab-session-1')
+    service.saveDraft(draftTab2, 'tab-session-2')
+
+    const retrievedTab1 = service.getDraft(null, 'tab-session-1')
+    const retrievedTab2 = service.getDraft(null, 'tab-session-2')
+
+    expect(retrievedTab1?.title).toBe('New Note in Tab 1')
+    expect(retrievedTab2?.title).toBe('New Note in Tab 2')
+
+    service.clearDraft(null, 'tab-session-1')
+    expect(service.getDraft(null, 'tab-session-1')).toBeNull()
+    expect(service.getDraft(null, 'tab-session-2')).not.toBeNull()
+  })
+
+  it('protects newer schema versions from being overwritten or downgraded', () => {
+    const futurePayload = {
+      version: 99,
+      notes: [
+        {
+          id: 'future-note',
+          title: 'Future note',
+          todos: [],
+          createdAt: 1000,
+          updatedAt: 1000
+        }
+      ]
+    }
+    localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(futurePayload))
+
+    // Reading notes should succeed in read-only mode
+    const notes = service.loadNotes()
+    expect(notes).toHaveLength(1)
+    expect(notes[0]?.id).toBe('future-note')
+
+    // Storage should NOT be downgraded
+    const rawAfterLoad = localStorage.getItem(NOTES_STORAGE_KEY)
+    expect(JSON.parse(rawAfterLoad!).version).toBe(99)
+
+    // Attempting to save notes should be blocked to prevent overwriting newer schema
+    const saveResult = service.saveNotes([])
+    expect(saveResult).toBe(false)
+    expect(JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY)!).version).toBe(99)
+  })
+
+  it('correctly falls back to inMemoryStorage when localStorage throws quota error', () => {
+    const originalSetItem = localStorage.setItem
+    localStorage.setItem = () => {
+      throw new Error('QuotaExceededError')
+    }
+
+    service.saveDraft({
+      noteId: 'in-memory-test',
+      title: 'Memory Draft',
+      todos: [],
+      updatedAt: 1234
+    })
+
+    // Should be retrievable from in-memory fallback even though localStorage.getItem returns null
+    const retrieved = service.getDraft('in-memory-test')
+    expect(retrieved).not.toBeNull()
+    expect(retrieved?.title).toBe('Memory Draft')
+
+    // Restore
+    localStorage.setItem = originalSetItem
+  })
 })

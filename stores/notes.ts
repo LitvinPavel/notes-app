@@ -34,21 +34,21 @@ export const useNotesStore = defineStore('notes', {
     },
 
     getDraftFor: (state) => {
-      return (noteId: string | null): NoteDraft | null => {
+      return (noteId: string | null, sessionId?: string): NoteDraft | null => {
         const key = noteId || 'new'
-        if (key in state.draftsByNoteId) {
-          return state.draftsByNoteId[key] ?? null
+        if (key in state.draftsByNoteId && state.draftsByNoteId[key]) {
+          return state.draftsByNoteId[key]
         }
-        return storageService.getDraft(noteId)
+        return storageService.getDraft(noteId, sessionId)
       }
     },
 
     hasDraftFor: (state) => {
-      return (noteId: string | null): boolean => {
+      return (noteId: string | null, sessionId?: string): boolean => {
         const key = noteId || 'new'
-        const draft = (key in state.draftsByNoteId)
+        const draft = (key in state.draftsByNoteId && state.draftsByNoteId[key])
           ? state.draftsByNoteId[key]
-          : storageService.getDraft(noteId)
+          : storageService.getDraft(noteId, sessionId)
         return draft !== null && draft !== undefined
       }
     },
@@ -109,8 +109,9 @@ export const useNotesStore = defineStore('notes', {
         this.notes = updatedNotes
       } else if (event.key && event.key.startsWith(DRAFT_STORAGE_PREFIX)) {
         const suffix = event.key.replace(DRAFT_STORAGE_PREFIX, '')
-        const targetId = suffix === 'new' ? null : suffix
-        this.draftsByNoteId[suffix] = storageService.getDraft(targetId)
+        const targetId = suffix.startsWith('new') ? null : suffix.split('_')[0]
+        const key = targetId || 'new'
+        this.draftsByNoteId[key] = storageService.getDraft(targetId)
       }
     },
 
@@ -124,6 +125,7 @@ export const useNotesStore = defineStore('notes', {
 
     /**
      * Create a brand new note and persist to storage.
+     * Re-reads freshest notes from storage first to avoid overwriting concurrent changes.
      */
     createNote(title: string, todos: TodoItem[]): Note {
       const now = Date.now()
@@ -139,7 +141,10 @@ export const useNotesStore = defineStore('notes', {
         updatedAt: now
       }
 
-      this.notes.unshift(newNote)
+      // Re-read latest notes to prevent array-level race condition
+      const freshNotes = storageService.loadNotes()
+      freshNotes.unshift(newNote)
+      this.notes = freshNotes
       storageService.saveNotes(this.notes)
       this.clearDraft(null)
 
@@ -149,15 +154,22 @@ export const useNotesStore = defineStore('notes', {
     /**
      * Update an existing note and persist to storage.
      * Prevents modifying or resurrecting a remotely deleted note.
+     * Supports optimistic locking via expectedUpdatedAt.
      */
-    updateNote(id: string, title: string, todos: TodoItem[]): Note | null {
-      const index = this.notes.findIndex(n => n.id === id)
+    updateNote(id: string, title: string, todos: TodoItem[], expectedUpdatedAt?: number): Note | null {
+      const freshNotes = storageService.loadNotes()
+      const index = freshNotes.findIndex(n => n.id === id)
       if (index === -1 || this.isDeletedRemotely(id)) {
         return null
       }
 
-      const existing = this.notes[index]
+      const existing = freshNotes[index]
       if (!existing) return null
+
+      // Optimistic concurrency check: fail if someone else updated the note concurrently
+      if (expectedUpdatedAt !== undefined && existing.updatedAt !== expectedUpdatedAt) {
+        return null
+      }
 
       const updated: Note = {
         id: existing.id,
@@ -171,7 +183,8 @@ export const useNotesStore = defineStore('notes', {
         updatedAt: Date.now()
       }
 
-      this.notes[index] = updated
+      freshNotes[index] = updated
+      this.notes = freshNotes
       storageService.saveNotes(this.notes)
       this.clearDraft(id)
 
@@ -182,8 +195,9 @@ export const useNotesStore = defineStore('notes', {
      * Delete a note by ID and persist to storage.
      */
     deleteNote(id: string): boolean {
-      const initialLength = this.notes.length
-      this.notes = this.notes.filter(n => n.id !== id)
+      const freshNotes = storageService.loadNotes()
+      const initialLength = freshNotes.length
+      this.notes = freshNotes.filter(n => n.id !== id)
 
       if (this.notes.length !== initialLength) {
         storageService.saveNotes(this.notes)
@@ -195,21 +209,21 @@ export const useNotesStore = defineStore('notes', {
     },
 
     /**
-     * Save in-progress draft isolated per note ID (survives page refresh).
+     * Save in-progress draft isolated per note ID and tab session (survives page refresh).
      */
-    saveDraft(draft: NoteDraft): void {
+    saveDraft(draft: NoteDraft, sessionId?: string): void {
       const key = draft.noteId || 'new'
       this.draftsByNoteId[key] = draft
-      storageService.saveDraft(draft)
+      storageService.saveDraft(draft, sessionId)
     },
 
     /**
      * Clear draft for a specific note from store and storage.
      */
-    clearDraft(noteId: string | null = null): void {
+    clearDraft(noteId: string | null = null, sessionId?: string): void {
       const key = noteId || 'new'
       delete this.draftsByNoteId[key]
-      storageService.clearDraft(noteId)
+      storageService.clearDraft(noteId, sessionId)
     }
   }
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 
 interface Props {
   modelValue: boolean
@@ -121,12 +121,6 @@ watch(
   },
   { immediate: true }
 )
-
-onMounted(() => {
-  if (props.modelValue) {
-    trapFocusOnOpen()
-  }
-})
 
 onBeforeUnmount(() => {
   cleanupOnClose()
