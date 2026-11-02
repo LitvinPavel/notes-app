@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import type { Note } from '~/types/note'
 import BaseButton from '~/components/ui/BaseButton.vue'
 
@@ -17,7 +17,12 @@ const emit = defineEmits<{
   (e: 'delete', note: Note): void
 }>()
 
-const previewTodos = computed(() => {
+const isExpanded = ref(false)
+
+const displayedTodos = computed(() => {
+  if (isExpanded.value) {
+    return props.note.todos
+  }
   return props.note.todos.slice(0, props.maxPreviewItems)
 })
 
@@ -37,6 +42,10 @@ const formattedDate = computed(() => {
     return ''
   }
 })
+
+const toggleExpanded = () => {
+  isExpanded.value = !isExpanded.value
+}
 </script>
 
 <template>
@@ -53,7 +62,7 @@ const formattedDate = computed(() => {
     <div class="note-card__body">
       <ul v-if="note.todos.length > 0" class="preview-todo-list">
         <li
-          v-for="todo in previewTodos"
+          v-for="todo in displayedTodos"
           :key="todo.id"
           :class="['preview-todo-item', { 'is-completed': todo.completed }]"
         >
@@ -71,7 +80,7 @@ const formattedDate = computed(() => {
               <polyline points="20 6 9 17 4 12" />
             </svg>
           </span>
-          <span class="preview-todo-item__text">
+          <span class="preview-todo-item__text" :title="todo.text">
             {{ todo.text || 'Пустая задача' }}
           </span>
         </li>
@@ -81,9 +90,28 @@ const formattedDate = computed(() => {
         Список задач пуст
       </p>
 
-      <div v-if="hiddenTodosCount > 0" class="note-card__more-badge">
-        +{{ hiddenTodosCount }} ещё...
-      </div>
+      <!-- Expand / Collapse toggle button for full preview -->
+      <button
+        v-if="note.todos.length > maxPreviewItems"
+        type="button"
+        class="note-card__toggle-btn"
+        :aria-expanded="isExpanded"
+        @click="toggleExpanded"
+      >
+        <span v-if="!isExpanded">+{{ hiddenTodosCount }} ещё (показать все)</span>
+        <span v-else>Свернуть список</span>
+        <svg
+          :class="['toggle-icon', { 'is-rotated': isExpanded }]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
     </div>
 
     <div class="note-card__footer">
@@ -223,15 +251,37 @@ const formattedDate = computed(() => {
   margin: var(--spacing-xs) 0;
 }
 
-.note-card__more-badge {
-  font-size: 0.75rem;
+.note-card__toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-primary);
   background-color: var(--color-primary-light);
-  padding: 2px var(--spacing-xs);
-  border-radius: var(--radius-sm);
+  padding: 4px var(--spacing-sm);
+  border-radius: var(--radius-md);
   align-self: flex-start;
-  margin-top: 2px;
+  margin-top: var(--spacing-xs);
+  cursor: pointer;
+  border: 1px solid transparent;
+  @include surface-hover;
+  @include focus-ring;
+
+  &:hover {
+    background-color: #dbeafe;
+    color: var(--color-primary-hover);
+  }
+}
+
+.toggle-icon {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--transition-fast);
+
+  &.is-rotated {
+    transform: rotate(180deg);
+  }
 }
 
 .note-card__footer {
