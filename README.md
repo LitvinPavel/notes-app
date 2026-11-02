@@ -2,6 +2,8 @@
 
 SPA-приложение для управления заметками и списками задач с кастомным движком Undo/Redo, версионированным хранилищем и поддержкой работы в Docker.
 
+**Демо (GitHub Pages)**: [https://litvinpavel.github.io/notes-app/](https://litvinpavel.github.io/notes-app/)
+
 ## Стек технологий
 
 - **Фреймворк**: Nuxt 3 (SPA-режим, Vue 3 Composition API, `<script setup lang="ts">`)
