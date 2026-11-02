@@ -184,9 +184,9 @@ onBeforeUnmount(() => {
 
 // Cross-tab deletion watcher
 watch(
-  () => notesStore.deletedInAnotherTabId,
-  (deletedId) => {
-    if (deletedId && deletedId === noteIdParam.value && !isNew.value) {
+  () => notesStore.isDeletedRemotely(noteIdParam.value),
+  (isDeleted) => {
+    if (isDeleted && !isNew.value) {
       isRemoteDeletedModalOpen.value = true
     }
   }

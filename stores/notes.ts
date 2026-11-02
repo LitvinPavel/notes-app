@@ -6,7 +6,7 @@ interface NotesState {
   notes: Note[]
   isInitialized: boolean
   activeDraft: NoteDraft | null
-  deletedInAnotherTabId: string | null
+  deletedRemoteIds: string[]
 }
 
 export const useNotesStore = defineStore('notes', {
@@ -14,7 +14,7 @@ export const useNotesStore = defineStore('notes', {
     notes: [],
     isInitialized: false,
     activeDraft: null,
-    deletedInAnotherTabId: null
+    deletedRemoteIds: []
   }),
 
   getters: {
@@ -34,6 +34,16 @@ export const useNotesStore = defineStore('notes', {
         if (!state.activeDraft) return false
         return state.activeDraft.noteId === noteId
       }
+    },
+
+    isDeletedRemotely: (state) => {
+      return (id: string): boolean => {
+        return state.deletedRemoteIds.includes(id)
+      }
+    },
+
+    deletedInAnotherTabId: (state): string | null => {
+      return state.deletedRemoteIds[state.deletedRemoteIds.length - 1] ?? null
     }
   },
 
@@ -60,11 +70,16 @@ export const useNotesStore = defineStore('notes', {
         const updatedNotes = storageService.loadNotes()
         const newIds = new Set(updatedNotes.map(n => n.id))
 
-        // Check if a note was deleted remotely
+        // Collect newly deleted note IDs
+        const newlyDeleted: string[] = []
         for (const id of previousIds) {
           if (!newIds.has(id)) {
-            this.deletedInAnotherTabId = id
+            newlyDeleted.push(id)
           }
+        }
+
+        if (newlyDeleted.length > 0) {
+          this.deletedRemoteIds = [...this.deletedRemoteIds, ...newlyDeleted]
         }
 
         this.notes = updatedNotes
@@ -73,8 +88,12 @@ export const useNotesStore = defineStore('notes', {
       }
     },
 
-    acknowledgeRemoteDeletion(): void {
-      this.deletedInAnotherTabId = null
+    acknowledgeRemoteDeletion(id?: string): void {
+      if (id) {
+        this.deletedRemoteIds = this.deletedRemoteIds.filter(i => i !== id)
+      } else {
+        this.deletedRemoteIds = []
+      }
     },
 
     /**
