@@ -2,7 +2,11 @@ import type { Note, NoteDraft, StoredNotesPayload, StorageMigration } from '~/ty
 
 export const CURRENT_SCHEMA_VERSION = 1
 export const NOTES_STORAGE_KEY = 'notes_app_data'
-export const DRAFT_STORAGE_KEY = 'notes_app_draft'
+export const DRAFT_STORAGE_PREFIX = 'notes_app_draft_'
+
+export function getDraftStorageKey(noteId: string | null): string {
+  return `${DRAFT_STORAGE_PREFIX}${noteId || 'new'}`
+}
 
 /**
  * Default sample notes for first-time launch.
@@ -169,21 +173,23 @@ export class StorageService {
   }
 
   /**
-   * Save an unsaved draft to survive page reload.
+   * Save an unsaved draft to survive page reload, isolated per note ID.
    */
   public saveDraft(draft: NoteDraft): void {
+    const key = getDraftStorageKey(draft.noteId)
     try {
-      this.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft))
+      this.setItem(key, JSON.stringify(draft))
     } catch (err) {
-      console.error('[StorageService] Failed to persist draft:', err)
+      console.error(`[StorageService] Failed to persist draft for ${key}:`, err)
     }
   }
 
   /**
-   * Retrieve active draft if one exists.
+   * Retrieve active draft for a specific note ID if one exists.
    */
-  public getDraft(): NoteDraft | null {
-    const raw = this.getItem(DRAFT_STORAGE_KEY)
+  public getDraft(noteId: string | null = null): NoteDraft | null {
+    const key = getDraftStorageKey(noteId)
+    const raw = this.getItem(key)
     if (!raw) return null
 
     try {
@@ -207,10 +213,11 @@ export class StorageService {
   }
 
   /**
-   * Clear active draft upon save or cancel.
+   * Clear active draft for a specific note ID upon save, cancel, or when returning to clean state.
    */
-  public clearDraft(): void {
-    this.removeItem(DRAFT_STORAGE_KEY)
+  public clearDraft(noteId: string | null = null): void {
+    const key = getDraftStorageKey(noteId)
+    this.removeItem(key)
   }
 
   private isStoredPayload(value: unknown): value is StoredNotesPayload {

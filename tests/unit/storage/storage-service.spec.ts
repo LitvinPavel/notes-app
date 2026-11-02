@@ -3,7 +3,8 @@ import {
   StorageService,
   CURRENT_SCHEMA_VERSION,
   NOTES_STORAGE_KEY,
-  DRAFT_STORAGE_KEY
+  DRAFT_STORAGE_PREFIX,
+  getDraftStorageKey
 } from '~/services/storage/storage-service'
 import type { Note, NoteDraft } from '~/types/note'
 
@@ -74,8 +75,9 @@ describe('StorageService (Versioned storage & migration)', () => {
     expect(notes.length).toBeGreaterThan(0)
   })
 
-  it('correctly persists, retrieves, and clears unsaved drafts', () => {
-    expect(service.getDraft()).toBeNull()
+  it('correctly persists, retrieves, and clears unsaved drafts by note ID', () => {
+    expect(DRAFT_STORAGE_PREFIX).toBe('notes_app_draft_')
+    expect(service.getDraft('existing-id')).toBeNull()
 
     const draft: NoteDraft = {
       noteId: 'existing-id',
@@ -85,14 +87,57 @@ describe('StorageService (Versioned storage & migration)', () => {
     }
 
     service.saveDraft(draft)
-    const retrieved = service.getDraft()
+    const retrieved = service.getDraft('existing-id')
 
     expect(retrieved).not.toBeNull()
     expect(retrieved?.title).toBe('Draft in progress')
     expect(retrieved?.todos[0]?.text).toBe('Draft task')
 
-    service.clearDraft()
-    expect(service.getDraft()).toBeNull()
-    expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull()
+    service.clearDraft('existing-id')
+    expect(service.getDraft('existing-id')).toBeNull()
+    expect(localStorage.getItem(getDraftStorageKey('existing-id'))).toBeNull()
+  })
+
+  it('isolates drafts across different notes and tabs without overwriting each other', () => {
+    const draftNoteA: NoteDraft = {
+      noteId: 'note-a',
+      title: 'Draft for Note A',
+      todos: [{ id: 'da-1', text: 'Task A', completed: false }],
+      updatedAt: 1000
+    }
+
+    const draftNoteB: NoteDraft = {
+      noteId: 'note-b',
+      title: 'Draft for Note B',
+      todos: [{ id: 'db-1', text: 'Task B', completed: true }],
+      updatedAt: 2000
+    }
+
+    const draftNewNote: NoteDraft = {
+      noteId: null,
+      title: 'Draft for Brand New Note',
+      todos: [{ id: 'dn-1', text: 'New Task', completed: false }],
+      updatedAt: 3000
+    }
+
+    // Save all three drafts concurrently
+    service.saveDraft(draftNoteA)
+    service.saveDraft(draftNoteB)
+    service.saveDraft(draftNewNote)
+
+    // Verify each draft is completely independent and correctly retrieved
+    const retrievedA = service.getDraft('note-a')
+    const retrievedB = service.getDraft('note-b')
+    const retrievedNew = service.getDraft(null)
+
+    expect(retrievedA?.title).toBe('Draft for Note A')
+    expect(retrievedB?.title).toBe('Draft for Note B')
+    expect(retrievedNew?.title).toBe('Draft for Brand New Note')
+
+    // Clearing draft for Note A does not touch Note B or New Note
+    service.clearDraft('note-a')
+    expect(service.getDraft('note-a')).toBeNull()
+    expect(service.getDraft('note-b')).not.toBeNull()
+    expect(service.getDraft(null)).not.toBeNull()
   })
 })

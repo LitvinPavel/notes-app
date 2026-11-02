@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, isRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNotesStore } from '~/stores/notes'
 import { useNoteHistory } from '~/composables/useNoteHistory'
@@ -85,17 +85,42 @@ const isDirty = computed(() => {
   )
 })
 
-// Schedule draft save
+// Flush and persist or clear draft immediately (e.g. before unload / pagehide / unmount)
+const flushDraftNow = () => {
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  commitTextSession()
+  const targetId = isNew.value ? null : noteIdParam.value
+  if (isDirty.value) {
+    notesStore.saveDraft({
+      noteId: targetId,
+      title: title.value,
+      todos: todos.value,
+      updatedAt: Date.now()
+    })
+  } else {
+    // If user returned to original state (e.g. through Undo), clean up the draft
+    notesStore.clearDraft(targetId)
+  }
+}
+
+// Schedule draft save or clean state clearance
 const scheduleDraftSave = () => {
   if (draftTimer) clearTimeout(draftTimer)
   draftTimer = setTimeout(() => {
+    const targetId = isNew.value ? null : noteIdParam.value
     if (isDirty.value) {
       notesStore.saveDraft({
-        noteId: isNew.value ? null : noteIdParam.value,
+        noteId: targetId,
         title: title.value,
         todos: todos.value,
         updatedAt: Date.now()
       })
+    } else {
+      // Clear draft when changes are completely reverted back to original
+      notesStore.clearDraft(targetId)
     }
   }, 800)
 }
@@ -148,17 +173,13 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
 // Focus title input and set cursor position to the end of the text
 function focusTitleInput() {
   nextTick(() => {
-    const component = titleInputRef.value as any
-    const input: HTMLInputElement | null =
-      component?.$el?.querySelector?.('input') ||
-      component?.input?.value ||
-      component?.input ||
-      component
+    const target = titleInputRef.value?.input
+    const inputEl = isRef(target) ? target.value : target
 
-    if (input && 'setSelectionRange' in input) {
-      input.focus()
-      const len = input.value.length
-      input.setSelectionRange(len, len)
+    if (inputEl instanceof HTMLInputElement) {
+      inputEl.focus()
+      const len = inputEl.value.length
+      inputEl.setSelectionRange(len, len)
     } else {
       titleInputRef.value?.focus()
     }
@@ -193,8 +214,8 @@ onMounted(() => {
     }
   }
 
-  // Check for unsaved draft
-  const draft = notesStore.activeDraft
+  // Check for unsaved draft for this specific note
+  const draft = notesStore.getDraftFor(targetId)
   if (draft && draft.noteId === targetId) {
     // Only prompt if draft actually has different content
     const differs =
@@ -204,19 +225,25 @@ onMounted(() => {
     if (differs) {
       pendingDraft.value = draft
       isDraftModalOpen.value = true
+    } else {
+      notesStore.clearDraft(targetId)
     }
   }
 
-  // Attach global keyboard shortcuts
+  // Attach global keyboard shortcuts and lifecycle listeners
   window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener('pagehide', flushDraftNow)
+  window.addEventListener('beforeunload', flushDraftNow)
 
   // Focus title input and place caret at the end
   focusTitleInput()
 })
 
 onBeforeUnmount(() => {
-  if (draftTimer) clearTimeout(draftTimer)
+  flushDraftNow()
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('pagehide', flushDraftNow)
+  window.removeEventListener('beforeunload', flushDraftNow)
 })
 
 // Cross-tab deletion watcher
@@ -286,6 +313,14 @@ const handleTodoTextInput = (id: string, text: string, fallbackInitial?: string)
 const handleSave = () => {
   commitTextSession()
 
+  const targetId = isNew.value ? null : noteIdParam.value
+
+  // Prevent saving as or resurrecting a remotely deleted note
+  if (!isNew.value && notesStore.isDeletedRemotely(noteIdParam.value)) {
+    isRemoteDeletedModalOpen.value = true
+    return
+  }
+
   const trimmedTitle = title.value.trim()
   if (!trimmedTitle) {
     titleError.value = 'Название заметки не может быть пустым'
@@ -302,35 +337,42 @@ const handleSave = () => {
   if (isNew.value) {
     notesStore.createNote(trimmedTitle, cleanedTodos)
   } else {
-    notesStore.updateNote(noteIdParam.value, trimmedTitle, cleanedTodos)
+    const updated = notesStore.updateNote(noteIdParam.value, trimmedTitle, cleanedTodos)
+    if (!updated) {
+      isRemoteDeletedModalOpen.value = true
+      return
+    }
   }
 
   clearHistory()
-  notesStore.clearDraft()
+  notesStore.clearDraft(targetId)
   router.push('/')
 }
 
 const handleCancelClick = () => {
   commitTextSession()
+  const targetId = isNew.value ? null : noteIdParam.value
   if (isDirty.value) {
     isCancelModalOpen.value = true
   } else {
     clearHistory()
-    notesStore.clearDraft()
+    notesStore.clearDraft(targetId)
     router.push('/')
   }
 }
 
 const handleConfirmCancel = () => {
+  const targetId = isNew.value ? null : noteIdParam.value
   clearHistory()
-  notesStore.clearDraft()
+  notesStore.clearDraft(targetId)
   router.push('/')
 }
 
 const handleDeleteClick = () => {
+  const targetId = isNew.value ? null : noteIdParam.value
   if (isNew.value) {
     clearHistory()
-    notesStore.clearDraft()
+    notesStore.clearDraft(targetId)
     router.push('/')
   } else {
     isDeleteModalOpen.value = true
@@ -338,11 +380,12 @@ const handleDeleteClick = () => {
 }
 
 const handleConfirmDelete = () => {
+  const targetId = isNew.value ? null : noteIdParam.value
   if (!isNew.value) {
     notesStore.deleteNote(noteIdParam.value)
   }
   clearHistory()
-  notesStore.clearDraft()
+  notesStore.clearDraft(targetId)
   router.push('/')
 }
 
@@ -357,16 +400,35 @@ const handleRestoreDraft = () => {
 }
 
 const handleDiscardDraft = () => {
-  notesStore.clearDraft()
+  const targetId = isNew.value ? null : noteIdParam.value
+  notesStore.clearDraft(targetId)
   pendingDraft.value = null
   isDraftModalOpen.value = false
 }
 
-// Remote deletion acknowledgment
-const handleRemoteDeletedConfirm = () => {
-  notesStore.acknowledgeRemoteDeletion()
+// Remote deletion resolution: save as new note to preserve user's typed changes
+const handleSaveAsNewNote = () => {
+  commitTextSession()
+  const trimmedTitle = title.value.trim() || 'Копия удаленной заметки'
+  const cleanedTodos = todos.value.map(t => ({
+    ...t,
+    text: t.text.trim()
+  }))
+
+  notesStore.createNote(trimmedTitle, cleanedTodos)
+  notesStore.acknowledgeRemoteDeletion(noteIdParam.value)
+  notesStore.clearDraft(noteIdParam.value)
   clearHistory()
-  notesStore.clearDraft()
+  isRemoteDeletedModalOpen.value = false
+  router.push('/')
+}
+
+// Remote deletion resolution: acknowledge and discard
+const handleRemoteDeletedConfirm = () => {
+  notesStore.acknowledgeRemoteDeletion(noteIdParam.value)
+  clearHistory()
+  notesStore.clearDraft(noteIdParam.value)
+  isRemoteDeletedModalOpen.value = false
   router.push('/')
 }
 </script>
@@ -575,12 +637,13 @@ const handleRemoteDeletedConfirm = () => {
       <!-- Remote Deletion in Another Tab Warning Modal -->
       <ConfirmModal
         v-model="isRemoteDeletedModalOpen"
-        title="Заметка удалена"
-        message="Эта заметка была только что удалена в другой вкладке браузера. Вы не можете сохранить в неё изменения."
-        confirm-text="Вернуться к списку"
-        hide-cancel
+        title="Заметка удалена в другой вкладке"
+        message="Эта заметка была удалена в другой вкладке браузера. Вы можете сохранить ваши изменения как новую заметку или вернуться к списку заметок."
+        confirm-text="Сохранить как новую"
+        cancel-text="Вернуться к списку"
         confirm-variant="primary"
-        @confirm="handleRemoteDeletedConfirm"
+        @confirm="handleSaveAsNewNote"
+        @cancel="handleRemoteDeletedConfirm"
       />
     </template>
   </div>

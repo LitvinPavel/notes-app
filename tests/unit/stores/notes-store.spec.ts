@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useNotesStore } from '~/stores/notes'
-import { storageService, NOTES_STORAGE_KEY } from '~/services/storage/storage-service'
-import type { TodoItem } from '~/types/note'
+import { storageService, NOTES_STORAGE_KEY, DRAFT_STORAGE_PREFIX } from '~/services/storage/storage-service'
+import type { TodoItem, NoteDraft } from '~/types/note'
 
 describe('useNotesStore (Pinia State Management & Sync)', () => {
   beforeEach(() => {
@@ -96,21 +96,96 @@ describe('useNotesStore (Pinia State Management & Sync)', () => {
     expect(store.isDeletedRemotely(note1.id)).toBe(false)
   })
 
-  it('saves and clears drafts via store actions', () => {
+  it('strictly blocks updating and resurrecting a remotely deleted note', () => {
     const store = useNotesStore()
     store.init()
 
-    store.saveDraft({
-      noteId: 'draft-id',
-      title: 'In Progress',
+    const note = store.createNote('Active Note', [{ id: '1', text: 'Task', completed: false }])
+
+    // Simulate remote tab deleting the note
+    storageService.saveNotes([])
+    store.handleStorageEvent({ key: NOTES_STORAGE_KEY } as StorageEvent)
+
+    expect(store.isDeletedRemotely(note.id)).toBe(true)
+
+    // User attempts to save / update the deleted note
+    const updateResult = store.updateNote(note.id, 'Resurrected Note', [])
+
+    // Update must be denied (returns null) and store notes must not be corrupted
+    expect(updateResult).toBeNull()
+    expect(store.getNoteById(note.id)).toBeUndefined()
+    expect(store.notes).toHaveLength(0)
+  })
+
+  it('allows saving unsaved work as a new note when remote deletion occurs', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const note = store.createNote('Original Note', [])
+
+    // Remote deletion happens
+    storageService.saveNotes([])
+    store.handleStorageEvent({ key: NOTES_STORAGE_KEY } as StorageEvent)
+
+    // Save as new note
+    const savedAsNew = store.createNote('Saved Copy of Original Note', [
+      { id: 'new-1', text: 'Important uncommitted work', completed: false }
+    ])
+
+    store.acknowledgeRemoteDeletion(note.id)
+
+    expect(savedAsNew.id).not.toBe(note.id)
+    expect(savedAsNew.title).toBe('Saved Copy of Original Note')
+    expect(store.notes).toHaveLength(1)
+    expect(store.getNoteById(savedAsNew.id)).toBeDefined()
+    expect(store.isDeletedRemotely(note.id)).toBe(false)
+  })
+
+  it('manages drafts isolated per note ID and handles cross-tab draft updates', () => {
+    const store = useNotesStore()
+    store.init()
+
+    const draft1: NoteDraft = {
+      noteId: 'note-1',
+      title: 'Draft for Note 1',
       todos: [],
-      updatedAt: Date.now()
-    })
+      updatedAt: 1000
+    }
 
-    expect(store.hasDraftFor('draft-id')).toBe(true)
-    expect(store.hasDraftFor('other-id')).toBe(false)
+    const draft2: NoteDraft = {
+      noteId: 'note-2',
+      title: 'Draft for Note 2',
+      todos: [],
+      updatedAt: 2000
+    }
 
-    store.clearDraft()
-    expect(store.hasDraftFor('draft-id')).toBe(false)
+    store.saveDraft(draft1)
+    store.saveDraft(draft2)
+
+    expect(store.hasDraftFor('note-1')).toBe(true)
+    expect(store.hasDraftFor('note-2')).toBe(true)
+    expect(store.getDraftFor('note-1')?.title).toBe('Draft for Note 1')
+    expect(store.getDraftFor('note-2')?.title).toBe('Draft for Note 2')
+
+    // Clearing draft for note-1 preserves draft for note-2
+    store.clearDraft('note-1')
+    expect(store.hasDraftFor('note-1')).toBe(false)
+    expect(store.hasDraftFor('note-2')).toBe(true)
+
+    // Cross-tab storage event for draft update
+    const remoteDraft: NoteDraft = {
+      noteId: 'note-remote',
+      title: 'Remote Tab Draft',
+      todos: [],
+      updatedAt: 3000
+    }
+    storageService.saveDraft(remoteDraft)
+
+    store.handleStorageEvent({
+      key: `${DRAFT_STORAGE_PREFIX}note-remote`
+    } as StorageEvent)
+
+    expect(store.hasDraftFor('note-remote')).toBe(true)
+    expect(store.getDraftFor('note-remote')?.title).toBe('Remote Tab Draft')
   })
 })

@@ -1,11 +1,15 @@
 import { defineStore } from 'pinia'
 import type { Note, TodoItem, NoteDraft } from '~/types/note'
-import { storageService, NOTES_STORAGE_KEY, DRAFT_STORAGE_KEY } from '~/services/storage/storage-service'
+import {
+  storageService,
+  NOTES_STORAGE_KEY,
+  DRAFT_STORAGE_PREFIX
+} from '~/services/storage/storage-service'
 
 interface NotesState {
   notes: Note[]
   isInitialized: boolean
-  activeDraft: NoteDraft | null
+  draftsByNoteId: Record<string, NoteDraft | null>
   deletedRemoteIds: string[]
 }
 
@@ -13,7 +17,7 @@ export const useNotesStore = defineStore('notes', {
   state: (): NotesState => ({
     notes: [],
     isInitialized: false,
-    activeDraft: null,
+    draftsByNoteId: {},
     deletedRemoteIds: []
   }),
 
@@ -29,10 +33,23 @@ export const useNotesStore = defineStore('notes', {
       }
     },
 
+    getDraftFor: (state) => {
+      return (noteId: string | null): NoteDraft | null => {
+        const key = noteId || 'new'
+        if (key in state.draftsByNoteId) {
+          return state.draftsByNoteId[key] ?? null
+        }
+        return storageService.getDraft(noteId)
+      }
+    },
+
     hasDraftFor: (state) => {
       return (noteId: string | null): boolean => {
-        if (!state.activeDraft) return false
-        return state.activeDraft.noteId === noteId
+        const key = noteId || 'new'
+        const draft = (key in state.draftsByNoteId)
+          ? state.draftsByNoteId[key]
+          : storageService.getDraft(noteId)
+        return draft !== null && draft !== undefined
       }
     },
 
@@ -44,6 +61,14 @@ export const useNotesStore = defineStore('notes', {
 
     deletedInAnotherTabId: (state): string | null => {
       return state.deletedRemoteIds[state.deletedRemoteIds.length - 1] ?? null
+    },
+
+    // Backwards-compatible getter
+    activeDraft: (state): NoteDraft | null => {
+      for (const draft of Object.values(state.draftsByNoteId)) {
+        if (draft !== null) return draft
+      }
+      return storageService.getDraft(null)
     }
   },
 
@@ -55,7 +80,6 @@ export const useNotesStore = defineStore('notes', {
       if (this.isInitialized) return
 
       this.notes = storageService.loadNotes()
-      this.activeDraft = storageService.getDraft()
       this.isInitialized = true
 
       // Multi-tab synchronization via storage event
@@ -83,8 +107,10 @@ export const useNotesStore = defineStore('notes', {
         }
 
         this.notes = updatedNotes
-      } else if (event.key === DRAFT_STORAGE_KEY) {
-        this.activeDraft = storageService.getDraft()
+      } else if (event.key && event.key.startsWith(DRAFT_STORAGE_PREFIX)) {
+        const suffix = event.key.replace(DRAFT_STORAGE_PREFIX, '')
+        const targetId = suffix === 'new' ? null : suffix
+        this.draftsByNoteId[suffix] = storageService.getDraft(targetId)
       }
     },
 
@@ -115,17 +141,18 @@ export const useNotesStore = defineStore('notes', {
 
       this.notes.unshift(newNote)
       storageService.saveNotes(this.notes)
-      this.clearDraft()
+      this.clearDraft(null)
 
       return newNote
     },
 
     /**
      * Update an existing note and persist to storage.
+     * Prevents modifying or resurrecting a remotely deleted note.
      */
     updateNote(id: string, title: string, todos: TodoItem[]): Note | null {
       const index = this.notes.findIndex(n => n.id === id)
-      if (index === -1) {
+      if (index === -1 || this.isDeletedRemotely(id)) {
         return null
       }
 
@@ -146,7 +173,7 @@ export const useNotesStore = defineStore('notes', {
 
       this.notes[index] = updated
       storageService.saveNotes(this.notes)
-      this.clearDraft()
+      this.clearDraft(id)
 
       return updated
     },
@@ -160,11 +187,7 @@ export const useNotesStore = defineStore('notes', {
 
       if (this.notes.length !== initialLength) {
         storageService.saveNotes(this.notes)
-
-        // Clear active draft if it was for the deleted note
-        if (this.activeDraft?.noteId === id) {
-          this.clearDraft()
-        }
+        this.clearDraft(id)
         return true
       }
 
@@ -172,19 +195,21 @@ export const useNotesStore = defineStore('notes', {
     },
 
     /**
-     * Save in-progress draft (survives page refresh).
+     * Save in-progress draft isolated per note ID (survives page refresh).
      */
     saveDraft(draft: NoteDraft): void {
-      this.activeDraft = draft
+      const key = draft.noteId || 'new'
+      this.draftsByNoteId[key] = draft
       storageService.saveDraft(draft)
     },
 
     /**
-     * Clear draft from store and storage.
+     * Clear draft for a specific note from store and storage.
      */
-    clearDraft(): void {
-      this.activeDraft = null
-      storageService.clearDraft()
+    clearDraft(noteId: string | null = null): void {
+      const key = noteId || 'new'
+      delete this.draftsByNoteId[key]
+      storageService.clearDraft(noteId)
     }
   }
 })
